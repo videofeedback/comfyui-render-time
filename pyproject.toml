@@ -6,7 +6,7 @@ license = { file = "LICENSE" }
 requires-python = ">=3.10"
 
 [project.urls]
-Repository = "https://github.com/videofeedback/Comfyui_render_time"
+Repository = "https://github.com/videofeedback/comfyui-render-time"
 
 [tool.comfy]
 PublisherId = "videofeedback"

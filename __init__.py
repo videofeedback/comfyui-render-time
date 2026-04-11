@@ -1,6 +1,6 @@
 # ComfyUI Render Time — __init__.py
 # Author: Ramiro Montes De Oca
-# GitHub: https://github.com/videofeedback/Comfyui_render_time
+# GitHub: https://github.com/videofeedback/comfyui-render-time
 #
 # Native ComfyUI plugin that instruments the execution engine to capture
 # per-node timing, machine configuration, and node settings, then writes

@@ -29,7 +29,7 @@ Search for **ComfyUI Render Time** in the built-in manager and click Install.
 ### Manual
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/videofeedback/Comfyui_render_time comfyui-Render-Time
+git clone https://github.com/videofeedback/comfyui-render-time comfyui-Render-Time
 pip install -r comfyui-Render-Time/requirements.txt
 ```
 Restart ComfyUI.
@@ -299,5 +299,5 @@ See [LICENSE](LICENSE) for full text.
 
 ## Links
 
-- GitHub: [https://github.com/videofeedback/Comfyui_render_time](https://github.com/videofeedback/Comfyui_render_time)
+- GitHub: [https://github.com/videofeedback/comfyui-render-time](https://github.com/videofeedback/comfyui-render-time)
 - ComfyUI Registry: [registry.comfy.org](https://registry.comfy.org)

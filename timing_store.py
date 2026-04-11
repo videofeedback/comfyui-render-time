@@ -1,6 +1,6 @@
 # ComfyUI Render Time — timing_store.py
 # Author: Ramiro Montes De Oca
-# GitHub: https://github.com/videofeedback/Comfyui_render_time
+# GitHub: https://github.com/videofeedback/comfyui-render-time
 #
 # In-memory store for per-run, per-node timing data.
 

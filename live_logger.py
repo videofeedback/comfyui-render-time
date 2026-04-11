@@ -1,6 +1,6 @@
 # ComfyUI Render Time — live_logger.py
 # Author: Ramiro Montes De Oca
-# GitHub: https://github.com/videofeedback/Comfyui_render_time
+# GitHub: https://github.com/videofeedback/comfyui-render-time
 #
 # Writes a TXT log file in real-time during execution.
 # Order: header → system info → node configs → live node lines → footer.

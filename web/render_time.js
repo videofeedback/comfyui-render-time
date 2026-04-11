@@ -1,7 +1,7 @@
 /**
  * Render Time — render_time.js
  * Author: Ramiro Montes De Oca
- * GitHub: https://github.com/videofeedback/Comfyui_render_time
+ * GitHub: https://github.com/videofeedback/comfyui-render-time
  *
  * ComfyUI node extension: "Render Time"
  * Extension ID: Comfy.RenderTime
@@ -659,7 +659,7 @@ app.registerExtension({
             Object.assign(this.properties, {
                 description:  "Displays per-run execution timing and metadata.",
                 connections:  "None needed",
-                github:       "https://github.com/videofeedback/Comfyui_render_time",
+                github:       "https://github.com/videofeedback/comfyui-render-time",
                 version:      "v1.0.0",
             });
 

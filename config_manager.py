@@ -1,6 +1,6 @@
 # ComfyUI Render Time — config_manager.py
 # Author: Ramiro Montes De Oca
-# GitHub: https://github.com/videofeedback/Comfyui_render_time
+# GitHub: https://github.com/videofeedback/comfyui-render-time
 #
 # Reads and writes plugin settings from/to config.json in the plugin directory.
 # Author/contact identity is stored separately in author.txt (blank on fresh install).

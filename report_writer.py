@@ -1,6 +1,6 @@
 # ComfyUI Render Time — report_writer.py
 # Author: Ramiro Montes De Oca
-# GitHub: https://github.com/videofeedback/Comfyui_render_time
+# GitHub: https://github.com/videofeedback/comfyui-render-time
 #
 # Generates .md and .txt timing reports and appends records to run_metrics.jsonl.
 
@@ -648,7 +648,7 @@ def build_timing_report_entry(prompt_id: str, record: dict, rows: list, total_se
         "plugin": "ComfyUI Render Time",
         "plugin_version": PLUGIN_VERSION,
         "author": "Ramiro Montes De Oca",
-        "github": "https://github.com/videofeedback/Comfyui_render_time",
+        "github": "https://github.com/videofeedback/comfyui-render-time",
         "run_id": prompt_id,
         "date": run_date,
         "total_sec": total_sec,
