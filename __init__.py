@@ -328,7 +328,7 @@ class RenderTimeNode:
     RETURN_TYPES = ()
     OUTPUT_NODE = False
     FUNCTION = "noop"
-    CATEGORY = "RenderTime📝"
+    CATEGORY = "utils"
     DESCRIPTION = "Displays per-run execution timing and metadata. No connections needed."
 
     def noop(self):
@@ -338,7 +338,7 @@ class RenderTimeNode:
 # ─── ComfyUI plugin exports ───────────────────────────────────────────────────
 
 NODE_CLASS_MAPPINGS        = {"RenderTime": RenderTimeNode}
-NODE_DISPLAY_NAME_MAPPINGS = {"RenderTime": "Render Time"}
+NODE_DISPLAY_NAME_MAPPINGS = {"RenderTime": "RenderTime📝"}
 WEB_DIRECTORY = "./web"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
