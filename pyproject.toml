@@ -1,0 +1,15 @@
+[project]
+name = "comfyui-render-time"
+version = "1.0.0"
+description = "Real-time per-node execution timing, live log, and workflow reconstruction for ComfyUI"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+
+[project.urls]
+Repository = "https://github.com/videofeedback/Comfyui_render_time"
+
+[tool.comfy]
+PublisherId = "videofeedback"
+DisplayName = "ComfyUI Render Time"
+Icon = ""
+requires-comfyui = ">=0.3.0"

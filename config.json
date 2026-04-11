@@ -1,0 +1,23 @@
+{
+  "embed_json": {
+    "enabled": true,
+    "location": "default",
+    "custom_path": "C:\\Users\\ramiropc\\Documents\\comfy\\metadata"
+  },
+  "txt_report": {
+    "enabled": true,
+    "location": "default",
+    "custom_path": ""
+  },
+  "isolated_json": {
+    "enabled": true,
+    "location": "default",
+    "custom_path": "C:\\Users\\ramiropc\\Documents\\comfy"
+  },
+  "workflow_png": {
+    "enabled": true,
+    "location": "default",
+    "custom_path": ""
+  },
+  "notify_on_complete": true
+}
