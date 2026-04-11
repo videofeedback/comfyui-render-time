@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-render-time"
-version = "1.0.1"
+version = "1.0.2"
 description = "Real-time per-node execution timing, live log, and workflow reconstruction for ComfyUI"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
