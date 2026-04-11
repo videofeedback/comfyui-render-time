@@ -27,11 +27,22 @@ Add the **Render Time** node to any workflow — no connections required. It aut
 Search for **ComfyUI Render Time** in the built-in manager and click Install.
 
 ### Manual
+
+**Windows / Linux**
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/videofeedback/comfyui-render-time comfyui-Render-Time
 pip install -r comfyui-Render-Time/requirements.txt
 ```
+
+**macOS** — install `libjpeg` first via Homebrew, then the requirements:
+```bash
+brew install libjpeg
+cd ComfyUI/custom_nodes
+git clone https://github.com/videofeedback/comfyui-render-time comfyui-Render-Time
+pip install -r comfyui-Render-Time/requirements.txt
+```
+
 Restart ComfyUI.
 
 ---
