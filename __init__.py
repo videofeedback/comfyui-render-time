@@ -328,7 +328,7 @@ class RenderTimeNode:
     RETURN_TYPES = ()
     OUTPUT_NODE = False
     FUNCTION = "noop"
-    CATEGORY = "Metadata"
+    CATEGORY = "📝RenderTime"
     DESCRIPTION = "Displays per-run execution timing and metadata. No connections needed."
 
     def noop(self):
