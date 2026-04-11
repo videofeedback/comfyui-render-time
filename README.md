@@ -35,12 +35,12 @@ git clone https://github.com/videofeedback/comfyui-render-time comfyui-Render-Ti
 pip install -r comfyui-Render-Time/requirements.txt
 ```
 
-**macOS** — install `libjpeg` first via Homebrew, then the requirements:
+**macOS** — use Python 3.13 (pre-built wheels available; newer alpha versions may fail):
 ```bash
-brew install libjpeg
+brew install python@3.13
 cd ComfyUI/custom_nodes
 git clone https://github.com/videofeedback/comfyui-render-time comfyui-Render-Time
-pip install -r comfyui-Render-Time/requirements.txt
+python3.13 -m pip install -r comfyui-Render-Time/requirements.txt
 ```
 
 Restart ComfyUI.
