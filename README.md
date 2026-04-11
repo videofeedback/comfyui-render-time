@@ -286,7 +286,7 @@ comfyui-Render-Time/
 
 - ComfyUI `>= 0.3.0`
 - Python `>= 3.10`
-- [Pillow](https://python-pillow.org/) — for `WORKFLOW.png` generation
+- [Pillow](https://pypi.org/project/Pillow/) — for `WORKFLOW.png` generation
 
 ---
 
