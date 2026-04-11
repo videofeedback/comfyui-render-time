@@ -502,7 +502,7 @@ async function _loadSettingsIntoBody(body) {
 
 const _SYNCED_PROPS = new Set([
     "workflow_author", "workflow_contact", "notify_on_complete",
-    "embed_json", "txt_report", "isolated_json", "workflow_png",
+    "embed_json", "isolated_json", "workflow_png",
 ]);
 
 function _applyConfigToProperties(node, cfg) {
@@ -511,7 +511,6 @@ function _applyConfigToProperties(node, cfg) {
         if (cfg.workflow_contact !== undefined) node.setProperty("workflow_contact",   cfg.workflow_contact);
         if (cfg.notify_on_complete !== undefined) node.setProperty("notify_on_complete", cfg.notify_on_complete !== false);
         if (cfg.embed_json)    node.setProperty("embed_json",    cfg.embed_json.enabled    !== false);
-        if (cfg.txt_report)    node.setProperty("txt_report",    cfg.txt_report.enabled    !== false);
         if (cfg.isolated_json) node.setProperty("isolated_json", cfg.isolated_json.enabled !== false);
         if (cfg.workflow_png)  node.setProperty("workflow_png",  cfg.workflow_png.enabled  !== false);
     } catch (_) {}
@@ -668,7 +667,6 @@ app.registerExtension({
             this.addProperty("workflow_contact",   "", "string");
             this.addProperty("notify_on_complete", true, "boolean");
             this.addProperty("embed_json",         true, "boolean");
-            this.addProperty("txt_report",         true, "boolean");
             this.addProperty("isolated_json",      true, "boolean");
             this.addProperty("workflow_png",       true, "boolean");
 
