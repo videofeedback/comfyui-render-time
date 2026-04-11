@@ -122,17 +122,40 @@ _LAUNCH_FLAGS = sys.argv[1:]  # everything after main.py
 
 # ─── Hardware context matching ───────────────────────────────────────────────
 
-def _get_windows_machine_id() -> Optional[str]:
-    """Read the permanent Machine GUID that Windows assigns to this installation."""
+def _get_machine_id() -> Optional[str]:
+    """Return a unique machine identifier — cross-platform."""
+    import sys as _sys
+    # ── Windows ──────────────────────────────────────────────────────────────
+    if _sys.platform == "win32":
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Cryptography",
+            )
+            value, _ = winreg.QueryValueEx(key, "MachineGuid")
+            winreg.CloseKey(key)
+            return str(value).strip() or None
+        except Exception:
+            return None
+    # ── macOS ─────────────────────────────────────────────────────────────────
+    if _sys.platform == "darwin":
+        try:
+            import subprocess
+            out = subprocess.run(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            for line in out.splitlines():
+                if "IOPlatformUUID" in line:
+                    parts = line.split("=", 1)
+                    if len(parts) == 2:
+                        return parts[1].strip().strip('"') or None
+        except Exception:
+            return None
+    # ── Linux ─────────────────────────────────────────────────────────────────
     try:
-        import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Cryptography",
-        )
-        value, _ = winreg.QueryValueEx(key, "MachineGuid")
-        winreg.CloseKey(key)
-        return str(value).strip() or None
+        return Path("/etc/machine-id").read_text(encoding="utf-8").strip() or None
     except Exception:
         return None
 
@@ -159,8 +182,8 @@ def _match_hardware_id() -> Optional[str]:
             except Exception:
                 pass
 
-    # Fall back to the Windows Machine GUID
-    return _get_windows_machine_id()
+    # Fall back to OS machine ID
+    return _get_machine_id()
 
 
 # ─── Widget name extraction ──────────────────────────────────────────────────
