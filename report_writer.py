@@ -1215,11 +1215,6 @@ def save_timed_workflow(
             filename_png = png_path.name
             png_path.parent.mkdir(parents=True, exist_ok=True)
 
-            preview = build_image_preview_info(png_info)
-            if preview:
-                timing_entry.setdefault("image_outputs", []).append(preview)
-                timing_entry.setdefault("preview_image", preview)
-
             source_image_info = next(
                 (
                     image_info

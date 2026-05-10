@@ -16,9 +16,9 @@ import { api } from "../../scripts/api.js";
 // Per-workflow-tab entry store.
 // Key: the ComfyWorkflow object from app.workflowManager.activeWorkflow — one
 // stable object per tab that outlives graph configure/clear cycles.
-// Value: the last timing entry for that tab.
+// Value: the last timing report array for that tab, or one legacy unscoped entry.
 const _wfEntries = new WeakMap();
-const RENDER_TIME_TITLE = "Render Time";
+const RENDER_TIME_TITLE = "⭐Render Time (ComfyCode)⭐";
 
 function _activeWorkflow() {
     try { return app.workflowManager?.activeWorkflow ?? null; } catch (_) { return null; }
@@ -560,12 +560,25 @@ function _getGraphTimingEntry(node) {
     try {
         const reports = node.graph?.extra?.render_time_report;
         if (Array.isArray(reports) && reports.length > 0) {
-            const scoped = reports.find((entry) =>
-                String(entry?.render_node_id ?? "") === String(node.id)
-            );
-            return scoped ?? reports[reports.length - 1];
+            return _entryFromReportsForNode(reports, node);
         }
     } catch (_) {}
+    return null;
+}
+
+function _entryFromReportsForNode(reports, node) {
+    if (!Array.isArray(reports) || !node) return null;
+    const scoped = reports.find((entry) =>
+        String(entry?.render_node_id ?? "") === String(node.id)
+    );
+    if (scoped) return scoped;
+
+    // Legacy reports did not have render_node_id. Use them only when there is a
+    // single unscoped entry, otherwise showing the last entry leaks previews
+    // between independent Render Time nodes.
+    if (reports.length === 1 && reports[0]?.render_node_id == null) {
+        return reports[0];
+    }
     return null;
 }
 
@@ -577,11 +590,32 @@ function _getGraphTimingEntry(node) {
  *  3. node._rtEntry         — fast in-session cache
  */
 function _getEntryForNode(node) {
+    const graphEntry = _getGraphTimingEntry(node);
+    if (graphEntry || _graphHasRenderTimeReports(node)) return graphEntry;
+
     const wf = _activeWorkflow();
-    return _getGraphTimingEntry(node)
-        ?? (wf ? _wfEntries.get(wf) : null)
+    const wfEntry = wf ? _wfEntries.get(wf) : null;
+    const workflowEntry = Array.isArray(wfEntry)
+        ? _entryFromReportsForNode(wfEntry, node)
+        : _entryMatchesNode(wfEntry, node);
+    return workflowEntry
         ?? node._rtEntry
         ?? null;
+}
+
+function _graphHasRenderTimeReports(node) {
+    try {
+        return Array.isArray(node.graph?.extra?.render_time_report)
+            && node.graph.extra.render_time_report.length > 0;
+    } catch (_) {
+        return false;
+    }
+}
+
+function _entryMatchesNode(entry, node) {
+    if (!entry || !node) return null;
+    if (entry.render_node_id == null) return entry;
+    return String(entry.render_node_id) === String(node.id) ? entry : null;
 }
 
 /**
@@ -845,9 +879,7 @@ app.registerExtension({
             normalizeRenderTimeTitle(this);
             // graph.extra first (authoritative), then the per-tab WeakMap (survives
             // graph configure cycles when ComfyUI reloads from the saved file).
-            const wf    = _activeWorkflow();
-            const entry = _getGraphTimingEntry(this)
-                       ?? (wf ? _wfEntries.get(wf) : null);
+            const entry = _getEntryForNode(this);
             if (!entry) return;
             this._rtEntry = entry;
             const container = this.timingWidget?.element;
@@ -900,7 +932,8 @@ app.registerExtension({
 
             // Persist against the active workflow tab — survives graph configure cycles
             const wf = _activeWorkflow();
-            if (wf && entry) _wfEntries.set(wf, entry);
+            if (wf && Array.isArray(render_time_report)) _wfEntries.set(wf, render_time_report);
+            else if (wf && entry) _wfEntries.set(wf, entry);
 
             // Only update nodes that belong to the graph that just ran.
             // node.graph === app.graph when the node is in the active workflow tab.
@@ -909,9 +942,9 @@ app.registerExtension({
                 const node = ref.deref();
                 if (!node) { _nodeInstances.delete(ref); continue; }
                 if (node.graph !== app.graph) continue;   // ← different tab — skip
-                node._rtEntry = render_time_report?.find?.((item) =>
-                    String(item?.render_node_id ?? "") === String(node.id)
-                ) ?? entry;
+                node._rtEntry = Array.isArray(render_time_report)
+                    ? _entryFromReportsForNode(render_time_report, node)
+                    : entry;
                 const container = node.timingWidget?.element;
                 if (!container) continue;
                 if (container.dataset.activeTab === "timing") {

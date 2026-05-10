@@ -389,7 +389,7 @@ class RenderTimeNode:
 # ─── ComfyUI plugin exports ───────────────────────────────────────────────────
 
 NODE_CLASS_MAPPINGS        = {"RenderTime": RenderTimeNode}
-NODE_DISPLAY_NAME_MAPPINGS = {"RenderTime": "Render Time"}
+NODE_DISPLAY_NAME_MAPPINGS = {"RenderTime": "⭐Render Time (ComfyCode)⭐"}
 WEB_DIRECTORY = "./web"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
