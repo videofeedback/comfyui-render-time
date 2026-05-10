@@ -11,6 +11,7 @@ import platform
 import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from . import timing_store
 from . import config_manager
@@ -691,7 +692,85 @@ def build_timing_report_entry(prompt_id: str, record: dict, rows: list, total_se
         entry["workflow_author"] = workflow_author
     if workflow_contact:
         entry["workflow_contact"] = workflow_contact
+    image_outputs = [
+        v for v in (
+            build_image_preview_info(image_info)
+            for image_info in (record.get("saved_images") or [])
+        )
+        if v
+    ]
+    if image_outputs:
+        entry["image_outputs"] = image_outputs
+        entry["preview_image"] = image_outputs[-1]
+    video_outputs = [
+        v for v in (
+            build_video_preview_info(video_info)
+            for video_info in (record.get("saved_videos") or [])
+        )
+        if v
+    ]
+    if video_outputs:
+        entry["video_outputs"] = video_outputs
+        entry["preview_video"] = video_outputs[-1]
     return entry
+
+
+def _build_output_preview_info(file_info, custom_route: str) -> Optional[dict]:
+    """Return the compact preview payload used by the frontend."""
+    if not isinstance(file_info, dict):
+        return None
+
+    filename = str(file_info.get("filename") or "").strip()
+    if not filename:
+        return None
+
+    subfolder = str(file_info.get("subfolder") or "").strip()
+    folder_type = str(file_info.get("folder_type") or "output").strip() or "output"
+    fmt = str(file_info.get("format") or Path(filename).suffix.lstrip(".")).lower()
+
+    preview = {
+        "filename": filename,
+        "subfolder": subfolder,
+        "type": folder_type,
+        "format": fmt,
+    }
+
+    path = file_info.get("path")
+    if path:
+        abs_path = str(path)
+        preview["path"] = abs_path
+        path_obj = Path(abs_path)
+        try:
+            output_dir = _get_output_dir()
+            path_obj.parent.relative_to(output_dir)
+            query = [
+                f"filename={quote(filename, safe='')}",
+                f"type={quote(folder_type, safe='')}",
+            ]
+            if subfolder:
+                query.append(f"subfolder={quote(subfolder, safe='')}")
+            preview["view_url"] = "/view?" + "&".join(query)
+        except ValueError:
+            preview["view_url"] = f"{custom_route}?path=" + quote(abs_path, safe="")
+    else:
+        query = [
+            f"filename={quote(filename, safe='')}",
+            f"type={quote(folder_type, safe='')}",
+        ]
+        if subfolder:
+            query.append(f"subfolder={quote(subfolder, safe='')}")
+        preview["view_url"] = "/view?" + "&".join(query)
+    return preview
+
+
+def build_image_preview_info(image_info) -> Optional[dict]:
+    """Return the compact preview payload used by the frontend for image files."""
+    return _build_output_preview_info(image_info, "/render-time/image-file")
+
+
+def build_video_preview_info(video_info) -> Optional[dict]:
+    """Return the compact preview payload used by the frontend for video files."""
+    return _build_output_preview_info(video_info, "/render-time/video-file")
 
 
 # ─── Workflow filename matcher ───────────────────────────────────────────────
@@ -771,21 +850,47 @@ def _get_output_dir() -> Path:
 _DEFAULT_PNG = Path(__file__).parent / "default.png"
 
 
+def build_managed_image_info(output_dir: Path, stem: str) -> dict:
+    """Return the managed Render Time PNG descriptor for the workflow preview."""
+    target_path = output_dir / build_output_filename(stem, "WORKFLOW", "png")
+
+    output_root = _get_output_dir()
+    subfolder = ""
+    folder_type = "custom"
+    try:
+        parent_rel = target_path.parent.relative_to(output_root)
+        subfolder = "" if str(parent_rel) == "." else parent_rel.as_posix()
+        folder_type = "output"
+    except ValueError:
+        subfolder = ""
+
+    return {
+        "path": str(target_path),
+        "filename": target_path.name,
+        "subfolder": subfolder,
+        "folder_type": folder_type,
+        "format": "png",
+    }
+
+
 # ─── Timed workflow save ─────────────────────────────────────────────────────
+
+def build_embedded_workflow(record: dict, timing_entry: dict) -> dict:
+    """Return a workflow copy with the current timing entry embedded."""
+    import copy
+
+    workflow = record.get("workflow") or {}
+    wf_copy = copy.deepcopy(workflow) if workflow else {}
+    wf_copy.setdefault("extra", {})["render_time_report"] = [timing_entry]
+    return wf_copy
+
 
 def _build_timed_wf_content(record: dict, timing_entry: dict) -> str:
     """
     Return the JSON string of a workflow with timing_entry stored in
     extra.render_time_report[].
     """
-    import copy
-    workflow = record.get("workflow") or {}
-    wf_copy = copy.deepcopy(workflow) if workflow else {}
-    if "extra" not in wf_copy:
-        wf_copy["extra"] = {}
-    # Always replace — keep only the current run, never accumulate past entries
-    wf_copy["extra"]["render_time_report"] = [timing_entry]
-    return json.dumps(wf_copy, indent=2, ensure_ascii=False)
+    return json.dumps(build_embedded_workflow(record, timing_entry), indent=2, ensure_ascii=False)
 
 
 def _write_timed_wf(directory: Path, filename: str, content: str, label: str) -> str:
@@ -793,43 +898,172 @@ def _write_timed_wf(directory: Path, filename: str, content: str, label: str) ->
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / filename
     path.write_text(content, encoding="utf-8")
-    print(f"[render-time] Workflow → {label}: {path.name}")
+    print(f"[render-time] Workflow -> {label}: {path.name}")
     return str(path)
+
+
+def _sanitize_filename_part(value: Optional[str]) -> str:
+    """Return a Windows-safe filename fragment while preserving readability."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.lower().endswith(".json"):
+        text = text[:-5].strip()
+    invalid = '<>:"/\\|?*'
+    text = "".join("-" if ch in invalid or ord(ch) < 32 else ch for ch in text)
+    text = " ".join(text.split())
+    return text.strip(" .-_")
+
+
+def _clean_title_candidate(value: Optional[str], workflow_token: str) -> str:
+    """Filter out empty or generic title candidates."""
+    text = _sanitize_filename_part(value)
+    if not text:
+        return ""
+    lower = text.lower()
+    if lower in {"workflow", "comfyui"}:
+        return ""
+    if workflow_token and lower == workflow_token.lower():
+        return ""
+    return text
+
+
+def _resolve_original_output_title(
+    prompt_id: str,
+    record: dict,
+    workflow_name: Optional[str] = None,
+) -> str:
+    """Return the original workflow title, if one can be discovered."""
+    workflow_token = _sanitize_filename_part(prompt_id[:8]) or "workflow"
+    workflow = record.get("workflow") or {}
+    extra = workflow.get("extra") or {}
+    matched_filename = _find_workflow_filename(workflow)
+
+    candidates = [
+        extra.get("workflow_name"),
+        extra.get("name"),
+        workflow.get("name"),
+        workflow_name,
+        matched_filename,
+    ]
+    for candidate in candidates:
+        title = _clean_title_candidate(candidate, workflow_token)
+        if title:
+            return title
+    return ""
+
+
+def _render_time_node_prefix(record: dict) -> str:
+    """Return the first non-empty prefix configured on a RenderTime node."""
+    prompt = record.get("api_prompt") or {}
+    workflow = record.get("workflow") or {}
+
+    for node_info in prompt.values():
+        if not isinstance(node_info, dict):
+            continue
+        if node_info.get("class_type") != "RenderTime":
+            continue
+        inputs = node_info.get("inputs") or {}
+        prefix = _sanitize_filename_part(inputs.get("prefix"))
+        if prefix:
+            return prefix
+
+    try:
+        for node in workflow.get("nodes", []):
+            if node.get("type") != "RenderTime":
+                continue
+            widgets = node.get("widgets_values") or []
+            prefix = _sanitize_filename_part(widgets[0] if widgets else "")
+            if prefix:
+                return prefix
+    except Exception:
+        pass
+
+    return ""
+
+
+def _build_timed_output_parts(
+    prompt_id: str,
+    record: dict,
+    workflow_name: Optional[str] = None,
+    cfg: Optional[dict] = None,
+) -> list[str]:
+    """Return the configured filename stem parts for this render."""
+    cfg = cfg or config_manager.get_config()
+    naming = cfg.get("output_naming") or {}
+
+    wall_start = record.get("wall_start", datetime.datetime.now().timestamp())
+    dt = datetime.datetime.fromtimestamp(wall_start)
+    timestamp_token = dt.strftime("%Y%m%d-%H%M%S")
+    workflow_token = _sanitize_filename_part(prompt_id[:8]) or "workflow"
+    original_title = _resolve_original_output_title(prompt_id, record, workflow_name)
+
+    title_mode = str(naming.get("title_mode") or "default").strip().lower()
+    extra_mode = str(naming.get("extra_mode") or "default_t_ymd_hms_w").strip().lower()
+
+    custom_title = _sanitize_filename_part(naming.get("custom_title"))
+    custom_extra = _sanitize_filename_part(naming.get("custom_extra"))
+    prefix_token = _render_time_node_prefix(record)
+
+    title_token = original_title
+    if title_mode == "custom" and custom_title:
+        title_token = custom_title
+
+    if extra_mode == "t_w":
+        return [p for p in (prefix_token, title_token, workflow_token) if p]
+    if extra_mode == "t":
+        return [p for p in (prefix_token, title_token) if p] or [workflow_token]
+    if extra_mode == "w":
+        return [p for p in (prefix_token, workflow_token) if p]
+    if extra_mode == "custom":
+        base = custom_extra if custom_extra else (title_token if title_token else workflow_token)
+        return [p for p in (prefix_token, base) if p]
+    if extra_mode == "none":
+        return [prefix_token] if prefix_token else []
+
+    combined_suffix = f"{timestamp_token}-{workflow_token}"
+    return [p for p in (prefix_token, title_token, combined_suffix) if p]
+
+
+def get_timed_output_stem(
+    prompt_id: str,
+    record: dict,
+    workflow_name: Optional[str] = None,
+    cfg: Optional[dict] = None,
+) -> str:
+    """Return the shared Render Time filename stem for this run."""
+    return "-".join(_build_timed_output_parts(prompt_id, record, workflow_name, cfg))
+
+
+def build_output_filename(stem: str, output_label: str, extension: str) -> str:
+    """Build the final filename for one Render Time output type."""
+    label = _sanitize_filename_part(output_label) or "output"
+    ext = str(extension or "").strip().lstrip(".")
+    base = f"{stem}-{label}" if stem else label
+    return f"{base}.{ext}" if ext else base
 
 
 def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) -> dict:
     """
     Save all output files (workflow JSON, TXT, isolated JSON) according to current config.
 
-    Base filename format: <workflow_name>--rendertime-DDMMYYYY-HH-MM-SS
-    The timestamp is taken from the run's wall-clock start time.
-    All three output types default to the ComfyUI output/ folder.
-
-    Called directly by generate() and also via the HTTP route /render-time/save-workflow
-    (JS fallback).  The config flags are honoured in both cases.
+    The shared output filename stem is built from the current Output File Naming
+    settings. The timestamp portion, when enabled, is taken from the run's
+    wall-clock start time.
     """
     record = timing_store.get_record(prompt_id)
     if record is None:
         return {"error": f"prompt_id {prompt_id} not found in store"}
 
-    # Timestamp from run start (wall clock)
-    wall_start = record.get("wall_start", datetime.datetime.now().timestamp())
-    dt = datetime.datetime.fromtimestamp(wall_start)
-    ts = dt.strftime("%Y%m%d-%H%M%S")     # e.g. 20260410-143045
-
-    # Strip .json extension if present
-    base_name = workflow_name
-    if base_name.lower().endswith(".json"):
-        base_name = base_name[:-5]
-
     cfg = config_manager.get_config()
     output_dir = _get_output_dir()
     saved_paths = []
+    stem = get_timed_output_stem(prompt_id, record, workflow_name, cfg)
 
     # 1 ── Embedded report in JSON Workflow
     #      Full workflow JSON with render_time_report embedded in extra.
     if cfg["embed_json"]["enabled"]:
-        filename_wf = f"{ts}-{base_name}-COMFYUI.json"
+        filename_wf = build_output_filename(stem, "COMFYUI", "json")
         content_wf  = _build_timed_wf_content(record, timing_entry)
         out_dir = _resolve_path(cfg["embed_json"], output_dir)
         saved_paths.append(_write_timed_wf(out_dir, filename_wf, content_wf,
@@ -840,7 +1074,7 @@ def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) 
     #      launch flags, total_sec, and all per-node data. 100% valid JSON, no ComfyUI
     #      graph structure.
     if cfg["isolated_json"]["enabled"]:
-        filename_iso = f"{ts}-{base_name}-LOG.json"
+        filename_iso = build_output_filename(stem, "LOG", "json")
         iso_entry    = {k: v for k, v in timing_entry.items()
                         if k != "author"}
         iso_content  = json.dumps(iso_entry, indent=2, ensure_ascii=False)
@@ -857,15 +1091,36 @@ def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) 
             from PIL import Image as PILImage
             from PIL.PngImagePlugin import PngInfo
 
-            filename_png = f"{ts}-{base_name}-WORKFLOW.png"
             png_dir = _resolve_path(cfg.get("workflow_png", {}), output_dir)
-            png_dir.mkdir(parents=True, exist_ok=True)
+            png_info = build_managed_image_info(png_dir, stem)
+            png_path = Path(str(png_info["path"]))
+            filename_png = png_path.name
+            png_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Load plugin default thumbnail; fall back to small placeholder
-            try:
-                img = PILImage.open(str(_DEFAULT_PNG)).convert("RGB")
-            except Exception:
-                img = PILImage.new("RGB", (256, 144), color=(30, 30, 30))
+            preview = build_image_preview_info(png_info)
+            if preview:
+                timing_entry["image_outputs"] = [preview]
+                timing_entry["preview_image"] = preview
+
+            source_image_info = next(
+                (
+                    image_info
+                    for image_info in reversed(timing_store.get_saved_images(prompt_id))
+                    if Path(str(image_info.get("path") or "")).suffix.lower() == ".png"
+                    and Path(str(image_info.get("path") or "")).exists()
+                ),
+                None,
+            )
+
+            if source_image_info:
+                with PILImage.open(str(source_image_info["path"])) as src:
+                    img = src.copy()
+            else:
+                try:
+                    with PILImage.open(str(_DEFAULT_PNG)) as src:
+                        img = src.convert("RGB")
+                except Exception:
+                    img = PILImage.new("RGB", (256, 144), color=(30, 30, 30))
 
             # Embed workflow JSON + timing data as tEXt metadata.
             # PNG tEXt chunks are Latin-1 — ensure_ascii=True escapes all non-ASCII
@@ -875,9 +1130,7 @@ def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) 
             # IMPORTANT: build a fresh copy of the workflow with render_time_report
             # replaced by the CURRENT run's timing — never embed stale data from a
             # previous session that was already sitting in workflow["extra"].
-            import copy as _copy
-            _wf_for_png = _copy.deepcopy(record.get("workflow") or {})
-            _wf_for_png.setdefault("extra", {})["render_time_report"] = [timing_entry]
+            _wf_for_png = build_embedded_workflow(record, timing_entry)
             wf_json = json.dumps(
                 _wf_for_png,
                 ensure_ascii=True, separators=(',', ':'),
@@ -890,15 +1143,16 @@ def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) 
             metadata.add_text("workflow",      wf_json)
             metadata.add_text("timing_report", tr_json)
 
-            img.save(str(png_dir / filename_png), pnginfo=metadata, compress_level=4)
-            print(f"[render-time] Workflow PNG → output: {filename_png}")
-            saved_paths.append(str(png_dir / filename_png))
+            img.save(str(png_path), pnginfo=metadata, compress_level=4)
+            print(f"[render-time] Workflow PNG -> output: {filename_png}")
+            timing_store.set_saved_images(prompt_id, [png_info])
+            saved_paths.append(str(png_path))
         except Exception as exc:
             import traceback
             print(f"[render-time] Warning: could not save workflow PNG: {exc}")
             traceback.print_exc()
 
-    return {"saved": saved_paths, "filename": f"{ts}-{base_name}"}
+    return {"saved": saved_paths, "filename": stem}
 
 
 # ─── Main entry point ────────────────────────────────────────────────────────

@@ -6,21 +6,30 @@
 # per-node timing, machine configuration, and node settings, then writes
 # reports to disk and embeds timing data into PNG metadata and workflow JSON.
 
-import json
-import time
-
 import nodes as comfy_nodes
 import execution as comfy_execution
 from execution import PromptExecutor
 from server import PromptServer
 from aiohttp import web
+from pathlib import Path
 
 from . import timing_store
 from . import report_writer
 from . import config_manager
 from . import live_logger
+from . import video_metadata
 
 _PLUGIN_TAG = "[render-time]"
+
+
+class _AnyType(str):
+    """ComfyUI socket type that accepts any connected output."""
+
+    def __ne__(self, _value):
+        return False
+
+
+_ANY_TYPE = _AnyType("*")
 
 
 # ─── Patch 1: get_output_data — per-node wall-clock timing ──────────────────
@@ -84,7 +93,7 @@ async def _patched_execute(
             if snapshot:
                 if "extra_pnginfo" not in extra_data or extra_data["extra_pnginfo"] is None:
                     extra_data["extra_pnginfo"] = {}
-                extra_data["extra_pnginfo"]["timing_report"] = json.dumps(snapshot)
+                extra_data["extra_pnginfo"]["timing_report"] = snapshot
 
     return await _orig_execute(
         server, dynprompt, caches, current_item,
@@ -105,6 +114,7 @@ async def _timed_execute_async(
     self, prompt, prompt_id, extra_data={}, execute_outputs=[]
 ):
     # Extract visual-editor workflow JSON (present when submitted from the UI)
+    epng = {}
     workflow = None
     try:
         epng = extra_data.get("extra_pnginfo") or {}
@@ -112,55 +122,68 @@ async def _timed_execute_async(
     except Exception:
         pass
 
-    timing_store.prompt_start(prompt_id, prompt, workflow)
-
-    # Derive workflow name using the same helper as report_writer
-    try:
-        _record_now = timing_store.get_record(prompt_id) or {}
-        _wf_name_for_log = report_writer._workflow_name(_record_now, prompt_id)
-    except Exception:
-        _wf_name_for_log = f"workflow_{prompt_id[:8]}"
-
-    live_logger.open_log(
-        prompt_id,
-        workflow,
-        timing_store.get_record(prompt_id)["wall_start"],
-        _wf_name_for_log,
-    )
+    prompt_token = timing_store.activate_prompt(prompt_id)
+    prompt_started = False
 
     try:
+        timing_store.prompt_start(prompt_id, prompt, workflow, epng)
+        prompt_started = True
+
+        # Derive workflow name using the same helper as report_writer
+        try:
+            _record_now = timing_store.get_record(prompt_id) or {}
+            _wf_name_for_log = report_writer._workflow_name(_record_now, prompt_id)
+        except Exception:
+            _wf_name_for_log = f"workflow_{prompt_id[:8]}"
+
+        live_logger.open_log(
+            prompt_id,
+            workflow,
+            timing_store.get_record(prompt_id)["wall_start"],
+            _wf_name_for_log,
+        )
+
         await _orig_execute_async(self, prompt, prompt_id, extra_data, execute_outputs)
     finally:
-        timing_store.prompt_end(prompt_id)
+        if prompt_started:
+            timing_store.prompt_end(prompt_id)
 
-        # Close the live log BEFORE writing any other output files
-        _total_sec = (timing_store.get_record(prompt_id) or {}).get("total_sec") or 0.0
-        live_logger.close_log(prompt_id, _total_sec)
+            # Close the live log BEFORE writing any other output files
+            _total_sec = (timing_store.get_record(prompt_id) or {}).get("total_sec") or 0.0
+            log_path = live_logger.close_log(prompt_id, _total_sec)
+            timing_store.set_live_log_path(prompt_id, log_path)
 
-        # Generate reports; get back the compact entry for workflow embedding
-        try:
-            entry = report_writer.generate(prompt_id)
-        except Exception as exc:
-            print(f"{_PLUGIN_TAG} Error generating report: {exc}")
-            entry = None
-
-        # Push timing update to the browser (broadcast — no client_id guard)
-        # so the JS node can render and inject data into graph.extra for Ctrl+S
-        if entry:
+            # Generate reports; get back the compact entry for workflow embedding
             try:
-                # Always only the current run — never accumulate past entries
-                updated_reports = [entry]
-
-                self.server.send_sync(
-                    "render_time.update",
-                    {
-                        "prompt_id": prompt_id,
-                        "render_time_report": updated_reports,
-                        "latest": entry,
-                    },
-                )
+                entry = report_writer.generate(prompt_id)
             except Exception as exc:
-                print(f"{_PLUGIN_TAG} Error sending WS update: {exc}")
+                print(f"{_PLUGIN_TAG} Error generating report: {exc}")
+                entry = None
+
+            if entry:
+                try:
+                    entry = video_metadata.finalize_saved_videos(prompt_id, entry, _PLUGIN_TAG)
+                except Exception as exc:
+                    print(f"{_PLUGIN_TAG} Error finalizing video metadata: {exc}")
+
+                # Push timing update to the browser (broadcast — no client_id guard)
+                # so the JS node can render and inject data into graph.extra for Ctrl+S
+                try:
+                    # Always only the current run — never accumulate past entries
+                    updated_reports = [entry]
+
+                    self.server.send_sync(
+                        "render_time.update",
+                        {
+                            "prompt_id": prompt_id,
+                            "render_time_report": updated_reports,
+                            "latest": entry,
+                        },
+                    )
+                except Exception as exc:
+                    print(f"{_PLUGIN_TAG} Error sending WS update: {exc}")
+
+        timing_store.reset_active_prompt(prompt_token)
 
 
 PromptExecutor.execute_async = _timed_execute_async
@@ -202,6 +225,7 @@ async def _route_save_workflow(request):
         timing_entry = report_writer.build_timing_report_entry(
             prompt_id, record, rows, total_sec
         )
+        timing_entry = video_metadata.enrich_entry_with_media_preview(prompt_id, timing_entry)
 
         result = report_writer.save_timed_workflow(prompt_id, workflow_name, timing_entry)
         return web.json_response(result)
@@ -273,6 +297,36 @@ async def _route_config_property(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+async def _route_media_file(request, allowed_suffixes: set[str], label: str):
+    """Serve a saved Render Time media preview from an absolute filesystem path."""
+    try:
+        raw_path = (request.query.get("path") or "").strip()
+        if not raw_path:
+            return web.json_response({"error": "path required"}, status=400)
+
+        path = Path(raw_path)
+        if not path.is_absolute():
+            return web.json_response({"error": "absolute path required"}, status=400)
+        if path.suffix.lower() not in allowed_suffixes:
+            return web.json_response({"error": f"only {label} preview is supported"}, status=400)
+        if not path.exists() or not path.is_file():
+            return web.json_response({"error": "file not found"}, status=404)
+
+        return web.FileResponse(path)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+async def _route_video_file(request):
+    """Serve a saved Render Time MP4 preview from an absolute filesystem path."""
+    return await _route_media_file(request, {".mp4"}, ".mp4")
+
+
+async def _route_image_file(request):
+    """Serve a saved Render Time PNG preview from an absolute filesystem path."""
+    return await _route_media_file(request, {".png"}, ".png")
+
+
 async def _route_latest_full(request):
     """Return the full timing entry (same shape as render_time.update) for the last completed run."""
     if timing_store._latest_prompt_id is None:
@@ -285,6 +339,7 @@ async def _route_latest_full(request):
         total_sec = record.get("total_sec") or 0.0
         rows = report_writer._build_node_rows(record, prompt_id)
         entry = report_writer.build_timing_report_entry(prompt_id, record, rows, total_sec)
+        entry = video_metadata.enrich_entry_with_media_preview(prompt_id, entry)
         return web.json_response(entry)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -297,6 +352,8 @@ def _register_routes():
         # wildcard, otherwise aiohttp matches "config" and "latest" as prompt IDs.
         app.router.add_get("/render-time/latest",           _route_latest)
         app.router.add_get("/render-time/latest/full",      _route_latest_full)
+        app.router.add_get("/render-time/image-file",       _route_image_file)
+        app.router.add_get("/render-time/video-file",       _route_video_file)
         app.router.add_get("/render-time/config",           _route_config_get)
         app.router.add_post("/render-time/config",          _route_config_post)
         app.router.add_post("/render-time/config/property", _route_config_property)
@@ -308,6 +365,8 @@ def _register_routes():
 
 
 _register_routes()
+video_metadata.patch_save_image(_PLUGIN_TAG)
+video_metadata.patch_save_video(_PLUGIN_TAG)
 
 print(f"{_PLUGIN_TAG} Execution engine patched. Ready.")
 
@@ -323,15 +382,29 @@ class RenderTimeNode:
 
     @classmethod
     def INPUT_TYPES(cls):
-        return {"optional": {}}
+        return {
+            "required": {
+                "prefix": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": False,
+                        "placeholder": "Optional Render Time file prefix",
+                    },
+                ),
+            },
+            "optional": {
+                "source": (_ANY_TYPE, {"forceInput": True}),
+            },
+        }
 
     RETURN_TYPES = ()
-    OUTPUT_NODE = False
+    OUTPUT_NODE = True
     FUNCTION = "noop"
     CATEGORY = "utils"
-    DESCRIPTION = "Displays per-run execution timing and metadata. No connections needed."
+    DESCRIPTION = "Displays timing metadata and can depend on a specific file output node."
 
-    def noop(self):
+    def noop(self, prefix="", source=None):
         return {}
 
 

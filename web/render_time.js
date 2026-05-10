@@ -108,6 +108,44 @@ function _fmtHMS(sec) {
     return `${s}s`;
 }
 
+function _escapeHTML(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function buildPreviewHTML(entry) {
+    const videoPreview = entry?.preview_video;
+    const imagePreview = entry?.preview_image;
+    const preview = videoPreview ?? imagePreview;
+    if (!preview?.view_url) return "";
+    const filename = _escapeHTML(preview.filename ?? (videoPreview ? "output.mp4" : "output.png"));
+    const subfolder = preview.subfolder ? _escapeHTML(preview.subfolder) : "";
+    const src = _escapeHTML(preview.view_url);
+    const format = String(preview.format ?? (videoPreview ? "mp4" : "png")).toLowerCase();
+    const meta = subfolder
+        ? `<span style="color:#666;font-size:10px">${subfolder}/${filename}</span>`
+        : `<span style="color:#666;font-size:10px">${filename}</span>`;
+    const mediaHTML = videoPreview
+        ? `<video controls preload="metadata" muted playsinline
+            style="display:block;width:100%;max-height:220px;background:#000;object-fit:contain">
+            <source src="${src}" type="${format === "mp4" ? "video/mp4" : `video/${_escapeHTML(format)}`}">
+          </video>`
+        : `<img src="${src}" alt="${filename}"
+            style="display:block;width:100%;max-height:220px;background:#000;object-fit:contain">`;
+    return `
+      <div style="margin-bottom:10px">
+        <div style="color:#ccc;font-weight:bold;font-size:11px;margin-bottom:5px">Output Preview</div>
+        <div style="border:1px solid #2f2f2f;border-radius:6px;overflow:hidden;background:#0c0c0c">
+          ${mediaHTML}
+        </div>
+        <div style="margin-top:4px">${meta}</div>
+      </div>`;
+}
+
 // ─── Timing tab HTML ─────────────────────────────────────────────────────────
 
 function buildTimingHTML(entry) {
@@ -119,6 +157,7 @@ function buildTimingHTML(entry) {
     const nodesObj  = entry.nodes ?? {};
     const wfAuthor  = entry.workflow_author  ? `<br><span style="color:#888">Author:</span> ${entry.workflow_author}` : "";
     const wfContact = entry.workflow_contact ? `<br><span style="color:#888">Contact:</span> ${entry.workflow_contact}` : "";
+    const previewHTML = buildPreviewHTML(entry);
 
     // Sort node IDs according to current sort column & direction
     const nodeOrder = Object.keys(nodesObj).sort((a, b) => {
@@ -194,6 +233,7 @@ function buildTimingHTML(entry) {
     }
 
     return `
+      ${previewHTML}
       <div style="font-size:11px;color:#bbb;margin-bottom:8px;line-height:1.5">
         <span style="color:#888">GPU:</span> ${cfg.gpu ?? "?"} &nbsp;
         <span style="color:#888">VRAM:</span> ${cfg.vram_gb ?? "?"}GB &nbsp;
@@ -232,7 +272,13 @@ function buildTimingHTML(entry) {
 
 function buildSettingsHTML(cfg) {
     function locSelect(key, cur) {
-        const label = { embed_json: "Default (output/)", txt_report: "Default (output/)", isolated_json: "Default (output/)", workflow_png: "Default (output/)" }[key] ?? "Default";
+        const label = {
+            embed_json: "Default (output/)",
+            txt_report: "Default (output/)",
+            isolated_json: "Default (output/)",
+            workflow_png: "Default (output/)",
+            workflow_mp4: "Default (output/)",
+        }[key] ?? "Default";
         return `<select id="tr-loc-${key}" onchange="window._trLocChange('${key}')"
             style="width:100%;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;padding:2px 5px;font-size:10px;margin-top:3px">
           <option value="default" ${cur !== "custom" ? "selected" : ""}>${label}</option>
@@ -251,7 +297,7 @@ function buildSettingsHTML(cfg) {
             <div style="color:#555;font-size:10px;margin-bottom:4px">${desc}</div>
             ${locSelect(key, e.location)}
             <div id="tr-cp-${key}" style="${e.location === "custom" ? "" : "display:none"};margin-top:4px">
-              <input id="tr-custom-${key}" type="text" value="${(e.custom_path ?? "").replace(/"/g,"&quot;")}"
+              <input id="tr-custom-${key}" type="text" value="${_escapeHTML(e.custom_path ?? "")}"
                 placeholder="Absolute path…"
                 style="width:100%;box-sizing:border-box;background:#111;color:#ccc;border:1px solid #444;
                        border-radius:3px;padding:3px 6px;font-size:10px;font-family:monospace">
@@ -259,8 +305,16 @@ function buildSettingsHTML(cfg) {
           </div>`;
     }
 
-    const authorVal  = (cfg.workflow_author  ?? "").replace(/"/g,"&quot;");
-    const contactVal = (cfg.workflow_contact ?? "").replace(/"/g,"&quot;");
+    const authorVal  = _escapeHTML(cfg.workflow_author ?? "");
+    const contactVal = _escapeHTML(cfg.workflow_contact ?? "");
+    const mp4Cfg = cfg.workflow_mp4 ?? { location: "default", custom_path: "" };
+    const namingCfg = cfg.output_naming ?? {};
+    const titleMode = namingCfg.title_mode === "custom" ? "custom" : "default";
+    const extraModes = new Set(["default_t_ymd_hms_w", "t_w", "t", "w", "custom", "none"]);
+    const extraMode = extraModes.has(namingCfg.extra_mode) ? namingCfg.extra_mode : "default_t_ymd_hms_w";
+    const customTitleVal = _escapeHTML(namingCfg.custom_title ?? "");
+    const customExtraVal = _escapeHTML(namingCfg.custom_extra ?? "");
+    const videoMetaChk = cfg.video_metadata_enabled !== false ? "checked" : "";
     const notifyChk  = cfg.notify_on_complete !== false ? "checked" : "";
 
     return `
@@ -276,10 +330,57 @@ function buildSettingsHTML(cfg) {
             style="width:100%;box-sizing:border-box;background:#111;color:#ccc;border:1px solid #444;border-radius:3px;padding:3px 6px;font-size:10px;font-family:monospace">
         </div>
 
+        <div style="border:1px solid #2a2a2a;border-radius:4px;padding:7px 9px;margin-bottom:8px">
+          <div style="color:#ccc;font-weight:bold;font-size:11px;margin-bottom:5px">Output File Naming</div>
+          <div style="color:#555;font-size:10px;margin-bottom:6px">Controls the shared filename prefix used by JSON, TXT, PNG, and Render Time MP4 outputs.</div>
+          <label style="color:#888;font-size:10px;display:block;margin-bottom:2px">Title:</label>
+          <select id="tr-name-title-mode" onchange="window._trNamingChange()"
+            style="width:100%;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;padding:2px 5px;font-size:10px">
+            <option value="default" ${titleMode !== "custom" ? "selected" : ""}>(Default) Keep the Original Title</option>
+            <option value="custom" ${titleMode === "custom" ? "selected" : ""}>(Custom) Add a custom title</option>
+          </select>
+          <div id="tr-name-custom-title-wrap" style="${titleMode === "custom" ? "" : "display:none"};margin-top:4px">
+            <input id="tr-name-custom-title" type="text" value="${customTitleVal}" placeholder="Custom title..."
+              style="width:100%;box-sizing:border-box;background:#111;color:#ccc;border:1px solid #444;border-radius:3px;padding:3px 6px;font-size:10px;font-family:monospace">
+          </div>
+
+          <label style="color:#888;font-size:10px;display:block;margin-top:8px;margin-bottom:2px">Add Extra:</label>
+          <select id="tr-name-extra-mode" onchange="window._trNamingChange()"
+            style="width:100%;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;padding:2px 5px;font-size:10px">
+            <option value="default_t_ymd_hms_w" ${extraMode === "default_t_ymd_hms_w" ? "selected" : ""}>(Default T+YMD+HMS+W) [TITLE]-[YYYYMMDD-HHMMSS-WORKFLOW#]</option>
+            <option value="t_w" ${extraMode === "t_w" ? "selected" : ""}>(T+W) [TITLE]-[WORKFLOW#]</option>
+            <option value="t" ${extraMode === "t" ? "selected" : ""}>(T) [TITLE]</option>
+            <option value="w" ${extraMode === "w" ? "selected" : ""}>(W) [WORKFLOW#]</option>
+            <option value="custom" ${extraMode === "custom" ? "selected" : ""}>(CUSTOM) [CUSTOM]</option>
+            <option value="none" ${extraMode === "none" ? "selected" : ""}>(NONE)</option>
+          </select>
+          <div id="tr-name-custom-extra-wrap" style="${extraMode === "custom" ? "" : "display:none"};margin-top:4px">
+            <input id="tr-name-custom-extra" type="text" value="${customExtraVal}" placeholder="Custom filename text..."
+              style="width:100%;box-sizing:border-box;background:#111;color:#ccc;border:1px solid #444;border-radius:3px;padding:3px 6px;font-size:10px;font-family:monospace">
+          </div>
+        </div>
+
         ${outputRow("embed_json",    "Embedded report in JSON Workflow",              "Saves the workflow JSON with timing embedded in extra.render_time_report — uses the dated workflow filename.")}
         ${outputRow("txt_report",    "Generate TXT report",                          "Saves a plain-text timing report to the output folder — same name as the dated workflow file, .txt extension.")}
         ${outputRow("isolated_json", "Generate isolated JSON Render Time Report",    "Saves a standalone JSON timing file (not a workflow) with all machine info, render time, and node data.")}
         ${outputRow("workflow_png",  "Embedded Workflow PNG",                        "Saves a PNG using the first video/image frame as thumbnail. Full workflow JSON embedded — drag into ComfyUI to reload.")}
+
+        <div style="border:1px solid #2a2a2a;border-radius:4px;padding:7px 9px;margin-bottom:8px">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="tr-video-meta" ${videoMetaChk} style="accent-color:#4a9eff;width:12px;height:12px">
+            <span style="color:#ccc;font-size:11px;font-weight:bold">Embed metadata in saved MP4 video</span>
+          </label>
+          <div style="color:#555;font-size:10px;margin-top:3px;margin-left:18px">Creates a Render Time managed MP4 with embedded workflow and log using the Output File Naming rules above.</div>
+          <div style="margin-top:6px;margin-left:18px">
+            ${locSelect("workflow_mp4", mp4Cfg.location)}
+            <div id="tr-cp-workflow_mp4" style="${mp4Cfg.location === "custom" ? "" : "display:none"};margin-top:4px">
+              <input id="tr-custom-workflow_mp4" type="text" value="${_escapeHTML(mp4Cfg.custom_path ?? "")}"
+                placeholder="Absolute path..."
+                style="width:100%;box-sizing:border-box;background:#111;color:#ccc;border:1px solid #444;
+                       border-radius:3px;padding:3px 6px;font-size:10px;font-family:monospace">
+            </div>
+          </div>
+        </div>
 
         <div style="border:1px solid #2a2a2a;border-radius:4px;padding:7px 9px;margin-bottom:8px">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
@@ -315,6 +416,19 @@ function attachSettingsListeners(body) {
         const wrap = document.getElementById(`tr-cp-${key}`);
         if (sel && wrap) wrap.style.display = sel.value === "custom" ? "" : "none";
     };
+    window._trNamingChange = () => {
+        const titleModeSel = document.getElementById("tr-name-title-mode");
+        const titleWrap = document.getElementById("tr-name-custom-title-wrap");
+        if (titleModeSel && titleWrap) {
+            titleWrap.style.display = titleModeSel.value === "custom" ? "" : "none";
+        }
+        const extraModeSel = document.getElementById("tr-name-extra-mode");
+        const extraWrap = document.getElementById("tr-name-custom-extra-wrap");
+        if (extraModeSel && extraWrap) {
+            extraWrap.style.display = extraModeSel.value === "custom" ? "" : "none";
+        }
+    };
+    window._trNamingChange();
 
     // Refresh config button — re-loads settings from disk
     const refreshCfg = document.getElementById("tr-refresh-cfg");
@@ -335,8 +449,19 @@ function attachSettingsListeners(body) {
                 custom_path: document.getElementById(`tr-custom-${key}`)?.value.trim() ?? "",
             };
         }
+        newCfg.workflow_mp4 = {
+            location:    document.getElementById("tr-loc-workflow_mp4")?.value ?? "default",
+            custom_path: document.getElementById("tr-custom-workflow_mp4")?.value.trim() ?? "",
+        };
+        newCfg.output_naming = {
+            title_mode: document.getElementById("tr-name-title-mode")?.value ?? "default",
+            custom_title: document.getElementById("tr-name-custom-title")?.value.trim() ?? "",
+            extra_mode: document.getElementById("tr-name-extra-mode")?.value ?? "default_t_ymd_hms_w",
+            custom_extra: document.getElementById("tr-name-custom-extra")?.value.trim() ?? "",
+        };
         newCfg.workflow_author  = document.getElementById("tr-wf-author")?.value.trim()  ?? "";
         newCfg.workflow_contact = document.getElementById("tr-wf-contact")?.value.trim() ?? "";
+        newCfg.video_metadata_enabled = document.getElementById("tr-video-meta")?.checked ?? true;
         newCfg.notify_on_complete = document.getElementById("tr-notify")?.checked ?? true;
         _notifyEnabled = newCfg.notify_on_complete;
 
@@ -501,7 +626,7 @@ async function _loadSettingsIntoBody(body) {
 // ─── Properties Panel helpers ─────────────────────────────────────────────────
 
 const _SYNCED_PROPS = new Set([
-    "workflow_author", "workflow_contact", "notify_on_complete",
+    "workflow_author", "workflow_contact", "notify_on_complete", "video_metadata_enabled",
     "embed_json", "isolated_json", "workflow_png",
 ]);
 
@@ -509,6 +634,7 @@ function _applyConfigToProperties(node, cfg) {
     try {
         if (cfg.workflow_author  !== undefined) node.setProperty("workflow_author",    cfg.workflow_author);
         if (cfg.workflow_contact !== undefined) node.setProperty("workflow_contact",   cfg.workflow_contact);
+        if (cfg.video_metadata_enabled !== undefined) node.setProperty("video_metadata_enabled", cfg.video_metadata_enabled !== false);
         if (cfg.notify_on_complete !== undefined) node.setProperty("notify_on_complete", cfg.notify_on_complete !== false);
         if (cfg.embed_json)    node.setProperty("embed_json",    cfg.embed_json.enabled    !== false);
         if (cfg.isolated_json) node.setProperty("isolated_json", cfg.isolated_json.enabled !== false);
@@ -635,7 +761,7 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             onCreated?.apply(this, arguments);
 
-            this.serialize_widgets = false;
+            this.serialize_widgets = true;
             this.setSize([520, 380]);
             this.resizable = true;
 
@@ -665,6 +791,7 @@ app.registerExtension({
             // ── Properties Panel — editable settings (synced with config.json)
             this.addProperty("workflow_author",    "", "string");
             this.addProperty("workflow_contact",   "", "string");
+            this.addProperty("video_metadata_enabled", true, "boolean");
             this.addProperty("notify_on_complete", true, "boolean");
             this.addProperty("embed_json",         true, "boolean");
             this.addProperty("isolated_json",      true, "boolean");

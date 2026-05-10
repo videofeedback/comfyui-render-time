@@ -37,6 +37,18 @@ DEFAULT_CONFIG: dict = {
         "location": "default",
         "custom_path": "",
     },
+    "workflow_mp4": {
+        "location": "default",
+        "custom_path": "",
+    },
+    "output_naming": {
+        "title_mode": "default",  # "default" | "custom"
+        "custom_title": "",
+        "extra_mode": "default_t_ymd_hms_w",  # "default_t_ymd_hms_w" | "t_w" | "t" | "w" | "custom" | "none"
+        "custom_extra": "",
+    },
+    # Embed workflow + render-time metadata into MP4 files written by Save Video
+    "video_metadata_enabled": True,
     # Audio notification when a render + report completes
     "notify_on_complete": True,
 }
@@ -120,4 +132,5 @@ def get_default_descriptions() -> dict:
         "txt_report":    "Default: ComfyUI output/",
         "isolated_json": "Default: ComfyUI output/",
         "workflow_png":  "Default: ComfyUI output/",
+        "workflow_mp4":  "Default: ComfyUI output/",
     }

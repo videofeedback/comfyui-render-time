@@ -11,9 +11,11 @@ import json as _json
 from pathlib import Path
 from typing import Optional
 
+from . import config_manager
 from .report_writer import (
     _MACHINE_CONFIG, _LAUNCH_FLAGS, _fmt_hms,
-    _get_output_dir, _get_widget_names,
+    _get_output_dir, _get_widget_names, _resolve_path,
+    build_output_filename, get_timed_output_stem,
 )
 
 _SEP  = "=" * 72
@@ -168,13 +170,16 @@ def open_log(
     info, node configurations).  Called at prompt start, before any node runs.
     """
     try:
-        dt      = datetime.datetime.fromtimestamp(wall_start)
-        ts_file = dt.strftime("%Y%m%d-%H%M%S")
-        base    = wf_name or prompt_id[:8]
+        dt = datetime.datetime.fromtimestamp(wall_start)
+        base = wf_name or prompt_id[:8]
         if base.lower().endswith(".json"):
             base = base[:-5]
 
-        path = _get_output_dir() / f"{ts_file}-{base}-LOG.txt"
+        cfg = config_manager.get_config()
+        log_dir = _resolve_path(cfg.get("txt_report", {}), _get_output_dir())
+        record = {"workflow": workflow, "wall_start": wall_start}
+        stem = get_timed_output_stem(prompt_id, record, wf_name, cfg)
+        path = log_dir / build_output_filename(stem, "LOG", "txt")
         fh   = open(str(path), "w", encoding="utf-8")
         run  = _LogRun(path, fh, workflow)
         _runs[prompt_id] = run
