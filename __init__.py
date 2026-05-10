@@ -401,7 +401,7 @@ class RenderTimeNode:
     RETURN_TYPES = ()
     OUTPUT_NODE = True
     FUNCTION = "noop"
-    CATEGORY = "utils"
+    CATEGORY = "ComfyCode"
     DESCRIPTION = "Displays timing metadata and can depend on a specific file output node."
 
     def noop(self, prefix="", source=None):
@@ -411,7 +411,7 @@ class RenderTimeNode:
 # ─── ComfyUI plugin exports ───────────────────────────────────────────────────
 
 NODE_CLASS_MAPPINGS        = {"RenderTime": RenderTimeNode}
-NODE_DISPLAY_NAME_MAPPINGS = {"RenderTime": "RenderTime📝"}
+NODE_DISPLAY_NAME_MAPPINGS = {"RenderTime": "Render Node (ComfyCode)"}
 WEB_DIRECTORY = "./web"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
