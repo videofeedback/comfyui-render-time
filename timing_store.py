@@ -40,6 +40,7 @@ def prompt_start(
         "saved_images": [],
         "saved_videos": [],
         "live_log_path": None,
+        "render_node_logs": {},
     }
 
 
@@ -161,10 +162,13 @@ def get_active_prompt_id() -> Optional[str]:
     return _active_prompt_id.get() or _active_prompt_fallback
 
 
-def add_saved_video(prompt_id: str, video_info) -> None:
+def add_saved_video(prompt_id: str, video_info, node_id: Optional[str] = None) -> None:
     """Record a video file written during the prompt."""
     if prompt_id not in _store or not video_info:
         return
+    if node_id is not None and isinstance(video_info, dict):
+        video_info = dict(video_info)
+        video_info["node_id"] = str(node_id)
     videos = _store[prompt_id].setdefault("saved_videos", [])
     if video_info not in videos:
         videos.append(video_info)
@@ -176,10 +180,13 @@ def get_saved_videos(prompt_id: str) -> list:
     return list(entry.get("saved_videos", []))
 
 
-def add_saved_image(prompt_id: str, image_info) -> None:
+def add_saved_image(prompt_id: str, image_info, node_id: Optional[str] = None) -> None:
     """Record an image file written during the prompt."""
     if prompt_id not in _store or not image_info:
         return
+    if node_id is not None and isinstance(image_info, dict):
+        image_info = dict(image_info)
+        image_info["node_id"] = str(node_id)
     images = _store[prompt_id].setdefault("saved_images", [])
     if image_info not in images:
         images.append(image_info)
@@ -215,4 +222,24 @@ def set_live_log_path(prompt_id: str, path: Optional[str]) -> None:
 def get_live_log_path(prompt_id: str) -> Optional[str]:
     """Return the final live-log path for a prompt."""
     entry = _store.get(prompt_id) or {}
+    return entry.get("live_log_path")
+
+
+def set_render_node_log_path(prompt_id: str, node_id: str, path: Optional[str]) -> None:
+    """Record the final LOG.txt path for one RenderTime node."""
+    if prompt_id not in _store:
+        return
+    logs = _store[prompt_id].setdefault("render_node_logs", {})
+    logs[str(node_id)] = path
+
+
+def get_render_node_log_path(prompt_id: str, node_id: Optional[str] = None) -> Optional[str]:
+    """Return the LOG.txt path for one RenderTime node, or the first available log."""
+    entry = _store.get(prompt_id) or {}
+    logs = entry.get("render_node_logs") or {}
+    if node_id is not None:
+        return logs.get(str(node_id))
+    for value in logs.values():
+        if value:
+            return value
     return entry.get("live_log_path")

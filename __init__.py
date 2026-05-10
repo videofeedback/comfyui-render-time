@@ -136,48 +136,48 @@ async def _timed_execute_async(
         except Exception:
             _wf_name_for_log = f"workflow_{prompt_id[:8]}"
 
-        live_logger.open_log(
-            prompt_id,
-            workflow,
-            timing_store.get_record(prompt_id)["wall_start"],
-            _wf_name_for_log,
-        )
+        # Per-node LOG.txt files are written after execution from each
+        # RenderTime node's upstream scope. Avoid opening the old prompt-wide
+        # live log because it records unrelated later branches.
 
         await _orig_execute_async(self, prompt, prompt_id, extra_data, execute_outputs)
     finally:
         if prompt_started:
             timing_store.prompt_end(prompt_id)
 
-            # Close the live log BEFORE writing any other output files
-            _total_sec = (timing_store.get_record(prompt_id) or {}).get("total_sec") or 0.0
-            log_path = live_logger.close_log(prompt_id, _total_sec)
-            timing_store.set_live_log_path(prompt_id, log_path)
-
             # Generate reports; get back the compact entry for workflow embedding
             try:
-                entry = report_writer.generate(prompt_id)
+                generated = report_writer.generate(prompt_id)
             except Exception as exc:
                 print(f"{_PLUGIN_TAG} Error generating report: {exc}")
-                entry = None
+                generated = None
 
-            if entry:
+            if generated:
+                entries = generated.get("entries") if isinstance(generated, dict) else None
+                if not entries:
+                    entries = [generated]
+                finalized_entries = []
                 try:
-                    entry = video_metadata.finalize_saved_videos(prompt_id, entry, _PLUGIN_TAG)
+                    for entry in entries:
+                        finalized_entries.append(
+                            video_metadata.finalize_saved_videos(prompt_id, entry, _PLUGIN_TAG)
+                        )
                 except Exception as exc:
                     print(f"{_PLUGIN_TAG} Error finalizing video metadata: {exc}")
+                    finalized_entries = entries
 
                 # Push timing update to the browser (broadcast — no client_id guard)
                 # so the JS node can render and inject data into graph.extra for Ctrl+S
                 try:
                     # Always only the current run — never accumulate past entries
-                    updated_reports = [entry]
+                    updated_reports = finalized_entries
 
                     self.server.send_sync(
                         "render_time.update",
                         {
                             "prompt_id": prompt_id,
                             "render_time_report": updated_reports,
-                            "latest": entry,
+                            "latest": finalized_entries[-1],
                         },
                     )
                 except Exception as exc:
@@ -207,30 +207,8 @@ async def _route_by_id(request):
 
 
 async def _route_save_workflow(request):
-    """Called by the JS node to save the timed workflow JSON to disk."""
-    try:
-        body = await request.json()
-        prompt_id = body.get("prompt_id")
-        workflow_name = body.get("workflow_name", "workflow")
-
-        if not prompt_id:
-            return web.json_response({"error": "prompt_id required"}, status=400)
-
-        record = timing_store.get_record(prompt_id)
-        if record is None:
-            return web.json_response({"error": "prompt_id not found"}, status=404)
-
-        total_sec = record.get("total_sec") or 0.0
-        rows = report_writer._build_node_rows(record, prompt_id)
-        timing_entry = report_writer.build_timing_report_entry(
-            prompt_id, record, rows, total_sec
-        )
-        timing_entry = video_metadata.enrich_entry_with_media_preview(prompt_id, timing_entry)
-
-        result = report_writer.save_timed_workflow(prompt_id, workflow_name, timing_entry)
-        return web.json_response(result)
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
+    """Legacy JS fallback endpoint. Scoped reports are now generated server-side."""
+    return web.json_response({"saved": False, "reason": "server_side_scoped_reports"})
 
 
 async def _route_config_get(request):
@@ -401,7 +379,7 @@ class RenderTimeNode:
     RETURN_TYPES = ()
     OUTPUT_NODE = True
     FUNCTION = "noop"
-    CATEGORY = "ComfyCode"
+    CATEGORY = "⭐ComfyCode⭐"
     DESCRIPTION = "Displays timing metadata and can depend on a specific file output node."
 
     def noop(self, prefix="", source=None):
@@ -411,7 +389,7 @@ class RenderTimeNode:
 # ─── ComfyUI plugin exports ───────────────────────────────────────────────────
 
 NODE_CLASS_MAPPINGS        = {"RenderTime": RenderTimeNode}
-NODE_DISPLAY_NAME_MAPPINGS = {"RenderTime": "Render Node (ComfyCode)"}
+NODE_DISPLAY_NAME_MAPPINGS = {"RenderTime": "Render Time"}
 WEB_DIRECTORY = "./web"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

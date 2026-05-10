@@ -19,15 +19,17 @@ def patch_save_image(plugin_tag: str) -> None:
         print(f"{plugin_tag} Warning: could not patch Save Image: {exc}")
         return
 
-    def _resolve_prompt_id() -> Optional[str]:
+    def _resolve_prompt_context() -> tuple[Optional[str], Optional[str]]:
         prompt_id = None
+        node_id = None
         try:
             ctx = get_executing_context()
             if ctx is not None:
                 prompt_id = ctx.prompt_id
+                node_id = ctx.node_id
         except Exception:
             pass
-        return prompt_id or timing_store.get_active_prompt_id()
+        return prompt_id or timing_store.get_active_prompt_id(), node_id
 
     def _build_saved_image_info(base_dir, item) -> Optional[dict]:
         if not isinstance(item, dict):
@@ -62,12 +64,12 @@ def patch_save_image(plugin_tag: str) -> None:
                 extra_pnginfo=extra_pnginfo,
             )
 
-            prompt_id = _resolve_prompt_id()
+            prompt_id, node_id = _resolve_prompt_context()
             if prompt_id and getattr(self, "type", None) == "output":
                 for item in ((result.get("ui") or {}).get("images") or []):
                     image_info = _build_saved_image_info(getattr(self, "output_dir", ""), item)
                     if image_info:
-                        timing_store.add_saved_image(prompt_id, image_info)
+                        timing_store.add_saved_image(prompt_id, image_info, node_id)
             return result
 
         comfy_nodes.SaveImage.save_images = _patched_core_save_images
@@ -77,7 +79,7 @@ def patch_save_image(plugin_tag: str) -> None:
         original_helper_save_images = ImageSaveHelper.save_images
         original_helper_save_animated_png = ImageSaveHelper.save_animated_png
 
-        def _track_helper_results(prompt_id: Optional[str], results) -> None:
+        def _track_helper_results(prompt_id: Optional[str], node_id: Optional[str], results) -> None:
             if not prompt_id:
                 return
             if isinstance(results, dict):
@@ -87,7 +89,7 @@ def patch_save_image(plugin_tag: str) -> None:
             for item in iterable:
                 image_info = _build_saved_image_info(report_writer._get_output_dir(), item)
                 if image_info:
-                    timing_store.add_saved_image(prompt_id, image_info)
+                    timing_store.add_saved_image(prompt_id, image_info, node_id)
 
         def _patched_helper_save_images(images, filename_prefix: str, folder_type, cls, compress_level=4):
             result = original_helper_save_images(
@@ -98,7 +100,8 @@ def patch_save_image(plugin_tag: str) -> None:
                 compress_level=compress_level,
             )
             if str(getattr(folder_type, "value", folder_type)).lower() == "output":
-                _track_helper_results(_resolve_prompt_id(), result)
+                prompt_id, node_id = _resolve_prompt_context()
+                _track_helper_results(prompt_id, node_id, result)
             return result
 
         def _patched_helper_save_animated_png(
@@ -118,7 +121,8 @@ def patch_save_image(plugin_tag: str) -> None:
                 compress_level=compress_level,
             )
             if str(getattr(folder_type, "value", folder_type)).lower() == "output":
-                _track_helper_results(_resolve_prompt_id(), [result])
+                prompt_id, node_id = _resolve_prompt_context()
+                _track_helper_results(prompt_id, node_id, [result])
             return result
 
         ImageSaveHelper.save_images = staticmethod(_patched_helper_save_images)
@@ -175,9 +179,9 @@ def patch_save_video(plugin_tag: str) -> None:
         except Exception:
             return None
 
-    def _resolve_save_video_prompt(path) -> tuple[Optional[str], bool]:
+    def _resolve_save_video_prompt(path) -> tuple[Optional[str], Optional[str], bool]:
         if not isinstance(path, (str, os.PathLike)):
-            return None, False
+            return None, None, False
 
         prompt_id = None
         node_id = None
@@ -193,15 +197,15 @@ def patch_save_video(plugin_tag: str) -> None:
             prompt_id = timing_store.get_active_prompt_id()
 
         if not prompt_id:
-            return None, False
+            return None, None, False
 
         if node_id is None:
-            return prompt_id, True
+            return prompt_id, None, True
 
         record = timing_store.get_record(prompt_id) or {}
         prompt = record.get("api_prompt") or {}
         node_info = prompt.get(str(node_id)) or {}
-        return prompt_id, node_info.get("class_type") == "SaveVideo"
+        return prompt_id, str(node_id), node_info.get("class_type") == "SaveVideo"
 
     def _wrap_save_to(original_save_to):
         def _patched_save_to(self, path, format=None, codec=None, metadata=None):
@@ -210,7 +214,7 @@ def patch_save_video(plugin_tag: str) -> None:
             if codec is None:
                 codec = VideoCodec.AUTO
 
-            prompt_id, is_save_video = _resolve_save_video_prompt(path)
+            prompt_id, node_id, is_save_video = _resolve_save_video_prompt(path)
             if not is_save_video:
                 return original_save_to(self, path, format=format, codec=codec, metadata=metadata)
 
@@ -225,7 +229,7 @@ def patch_save_video(plugin_tag: str) -> None:
             if prompt_id:
                 video_info = _tracked_video_info(os.fspath(path))
                 if video_info:
-                    timing_store.add_saved_video(prompt_id, video_info)
+                    timing_store.add_saved_video(prompt_id, video_info, node_id)
             return result
 
         return _patched_save_to
@@ -247,7 +251,13 @@ def finalize_saved_videos(prompt_id: str, timing_entry: dict, plugin_tag: str) -
     if record is None:
         return enrich_entry_with_media_preview(prompt_id, timing_entry)
 
-    source_video_infos = timing_store.get_saved_videos(prompt_id)
+    allowed_node_ids = set((timing_entry.get("nodes") or {}).keys())
+    source_video_infos = [
+        info for info in timing_store.get_saved_videos(prompt_id)
+        if not allowed_node_ids
+        or str(info.get("node_id", "")) in allowed_node_ids
+        or info.get("node_id") is None
+    ]
     valid_sources = [
         video_info for video_info in source_video_infos
         if Path(str(video_info.get("path") or "")).exists()
@@ -294,8 +304,21 @@ def finalize_saved_videos(prompt_id: str, timing_entry: dict, plugin_tag: str) -
         except Exception as exc:
             print(f"{plugin_tag} Warning: could not update video metadata for {source_path.name}: {exc}")
 
-    if final_video_infos:
+    if final_video_infos and not timing_entry.get("render_node_id"):
         timing_store.set_saved_videos(prompt_id, final_video_infos)
+    if final_video_infos:
+        result = enrich_entry_with_media_preview(prompt_id, timing_entry)
+        video_outputs = [
+            v for v in (
+                report_writer.build_video_preview_info(video_info)
+                for video_info in final_video_infos
+            )
+            if v
+        ]
+        if video_outputs:
+            result["video_outputs"] = video_outputs
+            result["preview_video"] = video_outputs[-1]
+        return result
 
     return enrich_entry_with_media_preview(prompt_id, timing_entry)
 
@@ -308,8 +331,13 @@ def enrich_entry_with_media_preview(
 ) -> dict:
     """Attach saved media preview metadata to a timing entry."""
     result = copy.deepcopy(timing_entry)
+    allowed_node_ids = set((result.get("nodes") or {}).keys())
 
-    image_infos = timing_store.get_saved_images(prompt_id)
+    image_infos = [
+        info for info in timing_store.get_saved_images(prompt_id)
+        if not allowed_node_ids
+        or str(info.get("node_id", "")) in allowed_node_ids
+    ]
     image_outputs = [
         v for v in (
             report_writer.build_image_preview_info(image_info)
@@ -320,7 +348,11 @@ def enrich_entry_with_media_preview(
     if image_outputs:
         result["image_outputs"] = image_outputs
 
-    video_infos = timing_store.get_saved_videos(prompt_id)
+    video_infos = [
+        info for info in timing_store.get_saved_videos(prompt_id)
+        if not allowed_node_ids
+        or str(info.get("node_id", "")) in allowed_node_ids
+    ]
     video_outputs = [
         v for v in (
             report_writer.build_video_preview_info(video_info)
@@ -334,7 +366,7 @@ def enrich_entry_with_media_preview(
     chosen_image = report_writer.build_image_preview_info(preview_image_info) if preview_image_info else None
     if chosen_image is None and image_outputs:
         chosen_image = image_outputs[-1]
-    if chosen_image is None:
+    if chosen_image is None and not result.get("render_node_id"):
         chosen_image = _get_existing_preview(prompt_id, "preview_image")
     if chosen_image:
         result["preview_image"] = chosen_image
@@ -344,7 +376,7 @@ def enrich_entry_with_media_preview(
     chosen_video = report_writer.build_video_preview_info(preview_video_info) if preview_video_info else None
     if chosen_video is None and video_outputs:
         chosen_video = video_outputs[-1]
-    if chosen_video is None:
+    if chosen_video is None and not result.get("render_node_id"):
         chosen_video = _get_existing_preview(prompt_id, "preview_video")
     if chosen_video:
         result["preview_video"] = chosen_video
@@ -399,7 +431,10 @@ def _build_final_video_metadata(prompt_id: str, timing_entry: dict) -> Optional[
     metadata["workflow"] = report_writer.build_embedded_workflow(record, timing_entry)
     metadata["timing_report"] = timing_entry
 
-    log_path = timing_store.get_live_log_path(prompt_id)
+    log_path = timing_store.get_render_node_log_path(
+        prompt_id,
+        timing_entry.get("render_node_id"),
+    )
     if log_path:
         metadata["render_time_log_filename"] = Path(log_path).name
         log_text = _read_text_file(log_path)

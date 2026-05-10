@@ -277,11 +277,12 @@ def _next_metrics_id(db_path: Path) -> str:
 
 # ─── Node table building ─────────────────────────────────────────────────────
 
-def _build_node_rows(record: dict, prompt_id: str) -> list:
+def _build_node_rows(record: dict, prompt_id: str, node_ids: Optional[set[str]] = None) -> list:
     """Return list of dicts, one per node, sorted by duration desc."""
     workflow = record.get("workflow")
     node_order = record.get("node_order", [])
     nodes_data = record.get("nodes", {})
+    allowed = {str(n) for n in node_ids} if node_ids is not None else None
 
     # Build lookup: node_id → title from workflow
     title_map = {}
@@ -293,6 +294,8 @@ def _build_node_rows(record: dict, prompt_id: str) -> list:
 
     rows = []
     for nid in node_order:
+        if allowed is not None and str(nid) not in allowed:
+            continue
         nd = nodes_data.get(nid, {})
         node_type = nd.get("node_type", "unknown")
         title = title_map.get(str(nid), node_type)
@@ -313,6 +316,77 @@ def _build_node_rows(record: dict, prompt_id: str) -> list:
     return rows
 
 
+def _iter_input_links(value):
+    """Yield source node IDs from a ComfyUI API prompt input value."""
+    if isinstance(value, (list, tuple)) and value:
+        first = value[0]
+        if isinstance(first, (str, int)):
+            yield str(first)
+        for item in value:
+            yield from _iter_input_links(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_input_links(item)
+
+
+def _upstream_node_ids(prompt: dict, node_id: str) -> set[str]:
+    """Return node IDs needed to execute node_id, including node_id itself."""
+    wanted: set[str] = set()
+
+    def visit(nid: str) -> None:
+        nid = str(nid)
+        if nid in wanted:
+            return
+        wanted.add(nid)
+        node_info = prompt.get(nid) or {}
+        inputs = node_info.get("inputs") or {}
+        for src_id in _iter_input_links(inputs):
+            if src_id in prompt:
+                visit(src_id)
+
+    visit(str(node_id))
+    return wanted
+
+
+def _render_time_node_ids(record: dict) -> list[str]:
+    """Return RenderTime node IDs in prompt order."""
+    prompt = record.get("api_prompt") or {}
+    ordered = []
+    for nid, node_info in prompt.items():
+        if isinstance(node_info, dict) and node_info.get("class_type") == "RenderTime":
+            ordered.append(str(nid))
+    return ordered
+
+
+def _filter_media_for_nodes(items: list, node_ids: set[str]) -> list:
+    """Keep media written by save nodes inside this RenderTime node's upstream scope."""
+    result = []
+    for item in items or []:
+        item_node_id = item.get("node_id") if isinstance(item, dict) else None
+        if item_node_id is not None and str(item_node_id) in node_ids:
+            result.append(item)
+    return result
+
+
+def _scoped_record(record: dict, node_id: str) -> tuple[dict, set[str]]:
+    """Return a shallow record copy limited to one RenderTime node's upstream graph."""
+    prompt = record.get("api_prompt") or {}
+    node_ids = _upstream_node_ids(prompt, str(node_id))
+    scoped = dict(record)
+    scoped["render_node_id"] = str(node_id)
+    scoped["node_order"] = [
+        nid for nid in record.get("node_order", [])
+        if str(nid) in node_ids
+    ]
+    scoped["nodes"] = {
+        nid: data for nid, data in (record.get("nodes") or {}).items()
+        if str(nid) in node_ids
+    }
+    scoped["saved_images"] = _filter_media_for_nodes(record.get("saved_images") or [], node_ids)
+    scoped["saved_videos"] = _filter_media_for_nodes(record.get("saved_videos") or [], node_ids)
+    return scoped, node_ids
+
+
 # ─── Workflow name extraction ─────────────────────────────────────────────────
 
 def _workflow_name(record: dict, prompt_id: str) -> str:
@@ -323,6 +397,16 @@ def _workflow_name(record: dict, prompt_id: str) -> str:
         if name:
             return str(name)
     return prompt_id[:8]
+
+
+def _rows_total_sec(rows: list) -> float:
+    """Return the scoped total duration represented by rows."""
+    total = sum(
+        float(r.get("duration_sec") or 0.0)
+        for r in rows
+        if not r.get("cached")
+    )
+    return round(total, 3)
 
 
 # ─── Markdown report ─────────────────────────────────────────────────────────
@@ -953,15 +1037,18 @@ def _resolve_original_output_title(
     return ""
 
 
-def _render_time_node_prefix(record: dict) -> str:
+def _render_time_node_prefix(record: dict, node_id: Optional[str] = None) -> str:
     """Return the first non-empty prefix configured on a RenderTime node."""
     prompt = record.get("api_prompt") or {}
     workflow = record.get("workflow") or {}
+    target_id = str(node_id or record.get("render_node_id") or "") or None
 
-    for node_info in prompt.values():
+    for nid, node_info in prompt.items():
         if not isinstance(node_info, dict):
             continue
         if node_info.get("class_type") != "RenderTime":
+            continue
+        if target_id is not None and str(nid) != target_id:
             continue
         inputs = node_info.get("inputs") or {}
         prefix = _sanitize_filename_part(inputs.get("prefix"))
@@ -971,6 +1058,8 @@ def _render_time_node_prefix(record: dict) -> str:
     try:
         for node in workflow.get("nodes", []):
             if node.get("type") != "RenderTime":
+                continue
+            if target_id is not None and str(node.get("id", "")) != target_id:
                 continue
             widgets = node.get("widgets_values") or []
             prefix = _sanitize_filename_part(widgets[0] if widgets else "")
@@ -1043,7 +1132,12 @@ def build_output_filename(stem: str, output_label: str, extension: str) -> str:
     return f"{base}.{ext}" if ext else base
 
 
-def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) -> dict:
+def save_timed_workflow(
+    prompt_id: str,
+    workflow_name: str,
+    timing_entry: dict,
+    record_override: Optional[dict] = None,
+) -> dict:
     """
     Save all output files (workflow JSON, TXT, isolated JSON) according to current config.
 
@@ -1051,7 +1145,7 @@ def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) 
     settings. The timestamp portion, when enabled, is taken from the run's
     wall-clock start time.
     """
-    record = timing_store.get_record(prompt_id)
+    record = record_override or timing_store.get_record(prompt_id)
     if record is None:
         return {"error": f"prompt_id {prompt_id} not found in store"}
 
@@ -1059,6 +1153,30 @@ def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) 
     output_dir = _get_output_dir()
     saved_paths = []
     stem = get_timed_output_stem(prompt_id, record, workflow_name, cfg)
+
+    rows = _build_node_rows(record, prompt_id)
+    total_sec = _rows_total_sec(rows)
+    if cfg.get("txt_report", {}).get("enabled", True):
+        txt_dir = _resolve_path(cfg.get("txt_report", {}), output_dir)
+        txt_path = txt_dir / build_output_filename(stem, "LOG", "txt")
+        author_info = config_manager.get_author_info()
+        txt_content = _render_txt(
+            prompt_id,
+            record,
+            rows,
+            total_sec,
+            author_info["workflow_author"],
+            author_info["workflow_contact"],
+        )
+        saved_paths.append(_write_timed_wf(txt_dir, txt_path.name, txt_content, "LOG text report"))
+        if record.get("render_node_id") is not None:
+            timing_store.set_render_node_log_path(
+                prompt_id,
+                str(record.get("render_node_id")),
+                str(txt_path),
+            )
+        else:
+            timing_store.set_live_log_path(prompt_id, str(txt_path))
 
     # 1 ── Embedded report in JSON Workflow
     #      Full workflow JSON with render_time_report embedded in extra.
@@ -1099,13 +1217,13 @@ def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) 
 
             preview = build_image_preview_info(png_info)
             if preview:
-                timing_entry["image_outputs"] = [preview]
-                timing_entry["preview_image"] = preview
+                timing_entry.setdefault("image_outputs", []).append(preview)
+                timing_entry.setdefault("preview_image", preview)
 
             source_image_info = next(
                 (
                     image_info
-                    for image_info in reversed(timing_store.get_saved_images(prompt_id))
+                    for image_info in reversed(record.get("saved_images") or [])
                     if Path(str(image_info.get("path") or "")).suffix.lower() == ".png"
                     and Path(str(image_info.get("path") or "")).exists()
                 ),
@@ -1145,7 +1263,8 @@ def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) 
 
             img.save(str(png_path), pnginfo=metadata, compress_level=4)
             print(f"[render-time] Workflow PNG -> output: {filename_png}")
-            timing_store.set_saved_images(prompt_id, [png_info])
+            if record_override is None:
+                timing_store.set_saved_images(prompt_id, [png_info])
             saved_paths.append(str(png_path))
         except Exception as exc:
             import traceback
@@ -1157,7 +1276,7 @@ def save_timed_workflow(prompt_id: str, workflow_name: str, timing_entry: dict) 
 
 # ─── Main entry point ────────────────────────────────────────────────────────
 
-def generate(prompt_id: str) -> Optional[dict]:
+def _generate_prompt_wide_legacy(prompt_id: str) -> Optional[dict]:
     """
     Generate timing reports for the given prompt_id.
     Returns the timing-report entry dict (for embedding in workflow JSON).
@@ -1207,3 +1326,72 @@ def generate(prompt_id: str) -> Optional[dict]:
         print(f"[render-time] Warning: could not save timed workflow: {exc}")
 
     return timing_entry
+
+
+def generate(prompt_id: str) -> Optional[dict]:
+    """
+    Generate independent reports for each RenderTime node in the prompt.
+    Each report is scoped to the RenderTime node's upstream dependency graph.
+    """
+    record = timing_store.get_record(prompt_id)
+    if record is None:
+        return None
+
+    reports_dir = _get_reports_dir()
+    author_info = config_manager.get_author_info()
+    workflow_author = author_info["workflow_author"]
+    workflow_contact = author_info["workflow_contact"]
+    render_node_ids = _render_time_node_ids(record) or [""]
+    entries = []
+
+    for render_node_id in render_node_ids:
+        scoped_record, _node_ids = (
+            _scoped_record(record, render_node_id)
+            if render_node_id else (record, set(str(n) for n in record.get("node_order", [])))
+        )
+        rows = _build_node_rows(scoped_record, prompt_id)
+        total_sec = _rows_total_sec(rows)
+        md_suffix = f"_{render_node_id}" if render_node_id else ""
+        md_stem = f"{datetime.date.today().strftime('%Y-%m-%d')}_{prompt_id[:8]}{md_suffix}"
+
+        md_path = reports_dir / f"{md_stem}.md"
+        md_content = _render_markdown(
+            prompt_id,
+            scoped_record,
+            rows,
+            total_sec,
+            workflow_author,
+            workflow_contact,
+        )
+        md_path.write_text(md_content, encoding="utf-8")
+        print(f"[render-time] Report written: {md_path.name}")
+
+        db_path = _get_metrics_db()
+        if db_path:
+            metrics_rec = _build_metrics_record(prompt_id, scoped_record, rows, total_sec)
+            with open(db_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(metrics_rec) + "\n")
+
+        timing_entry = build_timing_report_entry(prompt_id, scoped_record, rows, total_sec)
+        if render_node_id:
+            timing_entry["render_node_id"] = str(render_node_id)
+
+        try:
+            wf_name = (
+                _find_workflow_filename(scoped_record.get("workflow"))
+                or prompt_id[:8]
+            )
+            save_timed_workflow(
+                prompt_id,
+                wf_name,
+                timing_entry,
+                record_override=scoped_record,
+            )
+        except Exception as exc:
+            print(f"[render-time] Warning: could not save timed workflow: {exc}")
+
+        entries.append(timing_entry)
+
+    if len(entries) == 1:
+        return entries[0]
+    return {"entries": entries, "latest": entries[-1]}

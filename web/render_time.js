@@ -18,9 +18,17 @@ import { api } from "../../scripts/api.js";
 // stable object per tab that outlives graph configure/clear cycles.
 // Value: the last timing entry for that tab.
 const _wfEntries = new WeakMap();
+const RENDER_TIME_TITLE = "Render Time";
 
 function _activeWorkflow() {
     try { return app.workflowManager?.activeWorkflow ?? null; } catch (_) { return null; }
+}
+
+function normalizeRenderTimeTitle(node) {
+    try {
+        node.title = RENDER_TIME_TITLE;
+        if (node._meta) node._meta.title = RENDER_TIME_TITLE;
+    } catch (_) {}
 }
 
 let _notifyEnabled  = true;
@@ -118,18 +126,19 @@ function _escapeHTML(value) {
 }
 
 function buildPreviewHTML(entry) {
-    const videoPreview = entry?.preview_video;
     const imagePreview = entry?.preview_image;
-    const preview = videoPreview ?? imagePreview;
+    const videoPreview = entry?.preview_video;
+    const preview = imagePreview ?? videoPreview;
     if (!preview?.view_url) return "";
-    const filename = _escapeHTML(preview.filename ?? (videoPreview ? "output.mp4" : "output.png"));
+    const isVideoPreview = preview === videoPreview;
+    const filename = _escapeHTML(preview.filename ?? (isVideoPreview ? "output.mp4" : "output.png"));
     const subfolder = preview.subfolder ? _escapeHTML(preview.subfolder) : "";
     const src = _escapeHTML(preview.view_url);
-    const format = String(preview.format ?? (videoPreview ? "mp4" : "png")).toLowerCase();
+    const format = String(preview.format ?? (isVideoPreview ? "mp4" : "png")).toLowerCase();
     const meta = subfolder
         ? `<span style="color:#666;font-size:10px">${subfolder}/${filename}</span>`
         : `<span style="color:#666;font-size:10px">${filename}</span>`;
-    const mediaHTML = videoPreview
+    const mediaHTML = isVideoPreview
         ? `<video controls preload="metadata" muted playsinline
             style="display:block;width:100%;max-height:220px;background:#000;object-fit:contain">
             <source src="${src}" type="${format === "mp4" ? "video/mp4" : `video/${_escapeHTML(format)}`}">
@@ -551,7 +560,10 @@ function _getGraphTimingEntry(node) {
     try {
         const reports = node.graph?.extra?.render_time_report;
         if (Array.isArray(reports) && reports.length > 0) {
-            return reports[reports.length - 1];
+            const scoped = reports.find((entry) =>
+                String(entry?.render_node_id ?? "") === String(node.id)
+            );
+            return scoped ?? reports[reports.length - 1];
         }
     } catch (_) {}
     return null;
@@ -760,6 +772,7 @@ app.registerExtension({
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             onCreated?.apply(this, arguments);
+            normalizeRenderTimeTitle(this);
 
             this.serialize_widgets = true;
             this.setSize([520, 380]);
@@ -829,6 +842,7 @@ app.registerExtension({
         const onLoaded = nodeType.prototype.loadedGraphNode;
         nodeType.prototype.loadedGraphNode = function () {
             onLoaded?.apply(this, arguments);
+            normalizeRenderTimeTitle(this);
             // graph.extra first (authoritative), then the per-tab WeakMap (survives
             // graph configure cycles when ComfyUI reloads from the saved file).
             const wf    = _activeWorkflow();
@@ -881,7 +895,6 @@ app.registerExtension({
 
             // Inject into the graph that is currently active (the one that just ran)
             if (Array.isArray(render_time_report)) injectIntoGraph(render_time_report);
-            if (prompt_id) saveTimedWorkflow(prompt_id);
 
             const entry = latest ?? render_time_report?.at(-1) ?? null;
 
@@ -896,7 +909,9 @@ app.registerExtension({
                 const node = ref.deref();
                 if (!node) { _nodeInstances.delete(ref); continue; }
                 if (node.graph !== app.graph) continue;   // ← different tab — skip
-                node._rtEntry = entry;
+                node._rtEntry = render_time_report?.find?.((item) =>
+                    String(item?.render_node_id ?? "") === String(node.id)
+                ) ?? entry;
                 const container = node.timingWidget?.element;
                 if (!container) continue;
                 if (container.dataset.activeTab === "timing") {
