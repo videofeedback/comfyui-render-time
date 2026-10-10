@@ -70,8 +70,7 @@ _orig_execute = comfy_execution.execute
 
 async def _patched_execute(
     server, dynprompt, caches, current_item,
-    extra_data, executed, prompt_id,
-    execution_list, pending_subgraph_results, pending_async_nodes, ui_outputs
+    extra_data, executed, prompt_id, *args, **kwargs
 ):
     unique_id = current_item
 
@@ -97,8 +96,7 @@ async def _patched_execute(
 
     return await _orig_execute(
         server, dynprompt, caches, current_item,
-        extra_data, executed, prompt_id,
-        execution_list, pending_subgraph_results, pending_async_nodes, ui_outputs
+        extra_data, executed, prompt_id, *args, **kwargs
     )
 
 
